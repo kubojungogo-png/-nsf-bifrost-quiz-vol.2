@@ -180,7 +180,21 @@ tr.me{background:#eef3ff}
   </section>
 </div>
 
-<script>
+<script type="module">
+import { initializeApp } from "https://www.gstatic.com/firebasejs/12.18.0/firebase-app.js";
+import { getFirestore, collection, doc, getDoc, getDocs, setDoc } from "https://www.gstatic.com/firebasejs/12.18.0/firebase-firestore.js";
+
+const firebaseConfig = {
+  apiKey: "AIzaSyD7e1Fu1WZS3UTK2JISim7PLXCMjrr-Z0Y",
+  authDomain: "nsf-bifrost-quiz-vol1.firebaseapp.com",
+  projectId: "nsf-bifrost-quiz-vol1",
+  storageBucket: "nsf-bifrost-quiz-vol1.firebasestorage.app",
+  messagingSenderId: "552460841436",
+  appId: "1:552460841436:web:3ffc91b69ac7819e3edf19"
+};
+const firebaseApp = initializeApp(firebaseConfig);
+const db = getFirestore(firebaseApp);
+
 const NUM_QUESTIONS = 10;
 const RANK_KEY = "bosai_quiz_ranking_v2";
 
@@ -200,15 +214,24 @@ function fmt(sec){
  const cs=Math.floor((sec-Math.floor(sec))*100);
  return `${m}:${String(s).padStart(2,"0")}.${String(cs).padStart(2,"0")}`;
 }
-function getRanking(){
- try{return JSON.parse(localStorage.getItem(RANK_KEY)||"[]")}catch{return []}
+let rankingCache=[];
+function sortRanking(data){
+ return data.sort((a,b)=>b.score-a.score || b.correct-a.correct || a.time-b.time);
 }
-function setRanking(data){
- try{localStorage.setItem(RANK_KEY,JSON.stringify(data))}catch{}
+async function getRanking(){
+ try{
+   const snap=await getDocs(collection(db,"rankings"));
+   rankingCache=sortRanking(snap.docs.map(d=>({id:d.id,...d.data()})));
+   return rankingCache;
+ }catch(err){
+   console.error("ランキング取得エラー",err);
+   return rankingCache;
+ }
 }
-function renderRanking(targetId, meId=null){
- const data=getRanking().slice(0,10);
+async function renderRanking(targetId, meId=null){
  const target=document.getElementById(targetId);
+ target.innerHTML='<div class="empty">ランキングを読み込み中…</div>';
+ const data=(await getRanking()).slice(0,10);
  if(!data.length){target.innerHTML='<div class="empty">まだ記録がありません。</div>';return}
  let rows=data.map((r,i)=>{
   const medal=i===0?"🥇":i===1?"🥈":i===2?"🥉":`${i+1}`;
@@ -276,31 +299,30 @@ function answer(i){
   else showQuestion();
  },260);
 }
-function finish(){
+async function finish(){
  cancelAnimationFrame(raf);
  const time=(performance.now()-startTime)/1000;
  const penalty=Math.floor(time);
- const score=correct*1000-penalty;
- const id=Date.now()+"-"+Math.random().toString(36).slice(2,7);
- let ranking=getRanking();
- const newRecord={id,name:playerName,score,correct,time,ts:Date.now()};
- // 同じニックネームは最高記録1件だけ残す（前後の空白・大文字小文字の違いも同一扱い）
+ const score=Math.max(0,correct*1000-penalty);
  const normalizedName=playerName.trim().toLocaleLowerCase("ja-JP");
- const sameName=ranking.filter(r=>(r.name||"").trim().toLocaleLowerCase("ja-JP")===normalizedName);
- const oldBest=sameName.sort((a,b)=>b.score-a.score || b.correct-a.correct || a.time-b.time)[0];
- ranking=ranking.filter(r=>(r.name||"").trim().toLocaleLowerCase("ja-JP")!==normalizedName);
- let activeId=id;
- if(oldBest && (oldBest.score>newRecord.score ||
-    (oldBest.score===newRecord.score && oldBest.correct>newRecord.correct) ||
-    (oldBest.score===newRecord.score && oldBest.correct===newRecord.correct && oldBest.time<=newRecord.time))){
-   ranking.push(oldBest);
-   activeId=oldBest.id;
- }else{
-   ranking.push(newRecord);
+ const playerId=encodeURIComponent(normalizedName).slice(0,200);
+ const ref=doc(db,"rankings",playerId);
+ const newRecord={name:playerName,score,correct,time,updatedAt:Date.now()};
+ let activeId=playerId;
+ try{
+   const oldSnap=await getDoc(ref);
+   let shouldSave=true;
+   if(oldSnap.exists()){
+     const old=oldSnap.data();
+     shouldSave = score>old.score ||
+       (score===old.score && correct>old.correct) ||
+       (score===old.score && correct===old.correct && time<old.time);
+   }
+   if(shouldSave) await setDoc(ref,newRecord);
+ }catch(err){
+   console.error("ランキング保存エラー",err);
  }
- ranking.sort((a,b)=>b.score-a.score || b.correct-a.correct || a.time-b.time);
- ranking=ranking.slice(0,50);
- setRanking(ranking);
+ const ranking=await getRanking();
  const position=ranking.findIndex(r=>r.id===activeId)+1;
 
  $("#finalScore").textContent=`${score.toLocaleString()} pt`;
@@ -309,7 +331,7 @@ function finish(){
  $("#penaltyStat").textContent=`−${penalty}`;
  $("#nameResult").textContent=`${playerName} さんの記録`;
  $("#positionText").textContent=position>0&&position<=10?`現在 ${position} 位！`:"TOP10まであと少し！";
- renderRanking("ranking",activeId);
+ await renderRanking("ranking",activeId);
  show("result");
 }
 $("#startBtn").addEventListener("click",begin);
