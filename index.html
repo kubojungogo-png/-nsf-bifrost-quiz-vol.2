@@ -115,7 +115,7 @@ tr.me{background:#eef3ff}
     <div class="grid3">
       <div class="info"><b>10問</b><span>50問からランダム出題</span></div>
       <div class="info"><b>無制限</b><span>最後まで計測</span></div>
-      <div class="info"><b>TOP10</b><span>端末内ランキング</span></div>
+      <div class="info"><b>TOP10</b><span>全員共通・直近3日</span></div>
     </div>
 
     <label for="nameInput">ニックネーム</label>
@@ -214,25 +214,40 @@ function fmt(sec){
  const cs=Math.floor((sec-Math.floor(sec))*100);
  return `${m}:${String(s).padStart(2,"0")}.${String(cs).padStart(2,"0")}`;
 }
+const RANKING_RETENTION_MS = 3 * 24 * 60 * 60 * 1000; // 72時間
 let rankingCache=[];
+function isRecentRanking(r){
+ const updatedAt = Number(r.updatedAt);
+ return Number.isFinite(updatedAt) && updatedAt >= Date.now() - RANKING_RETENTION_MS;
+}
 function sortRanking(data){
  return data.sort((a,b)=>b.score-a.score || b.correct-a.correct || a.time-b.time);
 }
 async function getRanking(){
  try{
    const snap=await getDocs(collection(db,"rankings"));
-   rankingCache=sortRanking(snap.docs.map(d=>({id:d.id,...d.data()})));
+   rankingCache=sortRanking(snap.docs.map(d=>({id:d.id,...d.data()})).filter(isRecentRanking));
    return rankingCache;
  }catch(err){
    console.error("ランキング取得エラー",err);
    return rankingCache;
  }
 }
+function rankingUpdateText(data){
+ if(!data.length) return "直近3日間のランキング｜新しい記録を待っています";
+ const nextExpiry=Math.min(...data.map(r=>Number(r.updatedAt)+RANKING_RETENTION_MS).filter(Number.isFinite));
+ const remain=Math.max(0,nextExpiry-Date.now());
+ const totalMinutes=Math.ceil(remain/60000);
+ const hours=Math.floor(totalMinutes/60);
+ const minutes=totalMinutes%60;
+ return `直近3日間のランキング｜次の更新まで あと ${hours}時間${String(minutes).padStart(2,"0")}分`;
+}
 async function renderRanking(targetId, meId=null){
  const target=document.getElementById(targetId);
  target.innerHTML='<div class="empty">ランキングを読み込み中…</div>';
- const data=(await getRanking()).slice(0,10);
- if(!data.length){target.innerHTML='<div class="empty">まだ記録がありません。</div>';return}
+ const allData=await getRanking();
+ const data=allData.slice(0,10);
+ if(!data.length){target.innerHTML='<div class="empty">直近3日間の記録はまだありません。</div>';return}
  let rows=data.map((r,i)=>{
   const medal=i===0?"🥇":i===1?"🥈":i===2?"🥉":`${i+1}`;
   return `<tr class="${r.id===meId?"me":""}">
@@ -241,7 +256,7 @@ async function renderRanking(targetId, meId=null){
    <td class="num">${r.correct}/10</td><td class="num">${fmt(r.time)}</td>
   </tr>`;
  }).join("");
- target.innerHTML=`<div style="overflow-x:auto"><table>
+ target.innerHTML=`<div class="rankingCountdown" style="text-align:center;font-weight:800;margin:4px 0 12px;font-size:14px">${rankingUpdateText(allData)}</div><div style="overflow-x:auto"><table>
  <thead><tr><th>順位</th><th>名前</th><th class="num">ポイント</th><th class="num">正解</th><th class="num">タイム</th></tr></thead>
  <tbody>${rows}</tbody></table></div>`;
 }
@@ -314,7 +329,8 @@ async function finish(){
    let shouldSave=true;
    if(oldSnap.exists()){
      const old=oldSnap.data();
-     shouldSave = score>old.score ||
+     const oldExpired = !isRecentRanking(old);
+     shouldSave = oldExpired || score>old.score ||
        (score===old.score && correct>old.correct) ||
        (score===old.score && correct===old.correct && time<old.time);
    }
